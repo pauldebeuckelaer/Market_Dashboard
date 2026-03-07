@@ -24,8 +24,8 @@ POLYMARKET_DB_PATH = os.getenv("POLYMARKET_DB_PATH", "data/polymarket.db")
 # DISPLAY SETTINGS
 # ============================================================
 
-# Coins to track on the trading page
-TRACKED_COINS = ["HYPE", "BTC"]
+# Priority coins shown first in dropdowns
+PRIORITY_COINS = ["HYPE", "BTC", "ETH", "SOL"]
 
 # Default lookback for charts
 DEFAULT_CHART_HOURS = 24
@@ -34,7 +34,6 @@ DEFAULT_CHART_HOURS = 24
 # REFRESH
 # ============================================================
 
-# Auto-refresh interval in seconds (Streamlit rerun)
 REFRESH_INTERVAL_SECONDS = 60
 
 # ============================================================
@@ -54,3 +53,12 @@ TRAILBOT = {
     "state_file": os.getenv("TRAILBOT_STATE_FILE", "data/signal_state.json"),
     "log_file": os.getenv("TRAILBOT_LOG_FILE", "data/signal_monitor.log"),
 }
+
+# ============================================================
+# SCANNER STATUS
+# ============================================================
+
+SCANNER_STATUS_FILE = os.getenv(
+    "SCANNER_STATUS_FILE",
+    "/home/pauldb46/Signal_Scanner/scanner_status.json"
+)

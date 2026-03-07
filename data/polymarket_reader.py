@@ -81,7 +81,7 @@ def get_top_movers(hours: int = 24, min_move_pct: float = 3.0) -> pd.DataFrame:
             WHERE c.rn = 1
             AND ABS(c.yes_prob - b.old_prob) * 100 >= ?
             ORDER BY ABS(c.yes_prob - b.old_prob) DESC
-            """, conn, params=(cutoff, min_move_pct)
+            """, conn, params=[cutoff, min_move_pct]
         )
         return df
     finally:
@@ -101,7 +101,7 @@ def get_market_history(condition_id: str, hours: int = 48) -> pd.DataFrame:
             "SELECT snapshot_time, yes_prob, best_bid, best_ask, spread, "
             "volume_24h FROM snapshots "
             "WHERE condition_id = ? AND snapshot_time >= ? ORDER BY snapshot_time",
-            conn, params=(condition_id, cutoff)
+            conn, params=[condition_id, cutoff]
         )
         if len(df) > 0:
             df['snapshot_time'] = pd.to_datetime(df['snapshot_time'], format='mixed', utc=True)
@@ -127,7 +127,7 @@ def get_markets_by_event(event_slug: str) -> pd.DataFrame:
             ) latest ON s.condition_id = latest.condition_id
                     AND s.snapshot_time = latest.max_time
             ORDER BY s.yes_prob DESC
-            """, conn, params=(event_slug,)
+            """, conn, params=[event_slug,]
         )
         return df
     finally:
@@ -147,7 +147,7 @@ def get_recent_alerts(hours: int = 24) -> pd.DataFrame:
             "SELECT alert_time, alert_type, event_slug, question, "
             "prob_now, prob_before, volume_now, details FROM alerts "
             "WHERE alert_time >= ? ORDER BY alert_time DESC",
-            conn, params=(cutoff,)
+            conn, params=[cutoff,]
         )
         return df
     finally:
@@ -176,18 +176,18 @@ def get_event_summary() -> pd.DataFrame:
     try:
         df = pd.read_sql_query(
             """
-            SELECT event_slug,
-                   COUNT(DISTINCT condition_id) as market_count,
-                   ROUND(AVG(yes_prob), 3) as avg_prob,
-                   ROUND(SUM(volume_24h), 0) as total_24h_vol,
-                   MAX(snapshot_time) as last_update
+            SELECT s.event_slug,
+                   COUNT(DISTINCT s.condition_id) as market_count,
+                   ROUND(AVG(s.yes_prob), 3) as avg_prob,
+                   ROUND(SUM(s.volume_24h), 0) as total_24h_vol,
+                   MAX(s.snapshot_time) as last_update
             FROM snapshots s
             INNER JOIN (
                 SELECT condition_id, MAX(snapshot_time) as max_time
                 FROM snapshots GROUP BY condition_id
             ) latest ON s.condition_id = latest.condition_id
                     AND s.snapshot_time = latest.max_time
-            GROUP BY event_slug
+            GROUP BY s.event_slug
             ORDER BY total_24h_vol DESC
             """, conn
         )
