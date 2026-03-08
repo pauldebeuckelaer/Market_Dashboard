@@ -578,7 +578,7 @@ def render_polymarket():
         # ============================================================
         st.subheader("🎯 Market Consensus — Where Is The Money?")
 
-        consensus = get_consensus(top_n=30)
+        consensus = get_consensus(top_n=200, min_volume=1000)
 
         if len(consensus) > 0:
             # Filter by theme

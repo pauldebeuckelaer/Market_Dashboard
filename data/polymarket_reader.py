@@ -330,7 +330,7 @@ def get_event_summary() -> pd.DataFrame:
     finally:
         conn.close()
 
-def get_consensus(top_n: int = 30, min_volume: float = 5000) -> "pd.DataFrame":
+def get_consensus(top_n: int = 200, min_volume: float = 1000) -> "pd.DataFrame":
     """
     Top markets by 24h volume with current probability.
     This is the 'what does the market believe right now?' view.
