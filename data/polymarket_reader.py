@@ -329,3 +329,33 @@ def get_event_summary() -> pd.DataFrame:
         return df
     finally:
         conn.close()
+
+def get_consensus(top_n: int = 30, min_volume: float = 5000) -> "pd.DataFrame":
+    """
+    Top markets by 24h volume with current probability.
+    This is the 'what does the market believe right now?' view.
+    Filters out near-resolved markets (prob >95 or <5).
+    """
+    conn = _connect()
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT s.event_slug, s.question, s.condition_id,
+                   s.yes_prob, s.volume_24h, s.total_volume,
+                   s.liquidity, s.change_1d, s.snapshot_time
+            FROM snapshots s
+            INNER JOIN (
+                SELECT condition_id, MAX(snapshot_time) as max_time
+                FROM snapshots
+                GROUP BY condition_id
+            ) latest ON s.condition_id = latest.condition_id
+                    AND s.snapshot_time = latest.max_time
+            WHERE s.volume_24h >= ?
+            AND s.yes_prob BETWEEN 5 AND 95
+            ORDER BY s.volume_24h DESC
+            LIMIT ?
+            """, conn, params=[min_volume, top_n]
+        )
+        return df
+    finally:
+        conn.close()

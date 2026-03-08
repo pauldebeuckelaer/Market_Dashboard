@@ -27,9 +27,19 @@ from data.twap_reader import (
     get_recent_orders,
 )
 from data.polymarket_reader import (
+    get_money_flow, get_theme_summary, get_volume_by_event,
+    get_prob_timeline, THEME_TAG_SLUGS,
     get_active_markets, get_top_movers, get_recent_alerts,
     get_event_summary, get_market_history as get_pm_market_history,
     get_markets_by_event,
+)
+
+from data.polymarket_reader import (
+    get_active_markets, get_top_movers, get_recent_alerts,
+    get_event_summary, get_market_history as get_pm_market_history,
+    get_markets_by_event, get_money_flow, get_theme_summary,
+    get_volume_by_event, get_prob_timeline, get_consensus,
+    THEME_TAG_SLUGS,
 )
 
 
@@ -504,7 +514,6 @@ def render_polymarket():
         # Assign theme to each market based on event_slug keywords
         def assign_theme(slug):
             slug_lower = str(slug).lower()
-            # Simple keyword matching — not perfect but good enough
             fed_kw = ['fed', 'fomc', 'rate-cut', 'interest-rate', 'inflation',
                        'cpi', 'pce', 'gdp', 'recession', 'employment',
                        'monetary', 'federal-reserve', 'powell', 'jobs-report',
@@ -546,7 +555,6 @@ def render_polymarket():
         cols = st.columns(len(theme_stats))
         for i, (_, row) in enumerate(theme_stats.iterrows()):
             with cols[i]:
-                is_active = selected_theme == "All Themes" or selected_theme == row['theme']
                 label = row['theme']
                 if row['theme'] == "Fed & Monetary Policy":
                     label = "🏦 Fed"
@@ -562,6 +570,48 @@ def render_polymarket():
                     value=f"${row['vol_24h']:,.0f}",
                     delta=f"{int(row['markets'])} markets",
                 )
+
+        st.divider()
+
+        # ============================================================
+        # ROW 1.5: CONSENSUS — What does the market believe?
+        # ============================================================
+        st.subheader("🎯 Market Consensus — Where Is The Money?")
+
+        consensus = get_consensus(top_n=30)
+
+        if len(consensus) > 0:
+            # Filter by theme
+            if selected_theme != "All Themes":
+                consensus['theme'] = consensus['event_slug'].apply(assign_theme)
+                consensus = consensus[consensus['theme'] == selected_theme]
+
+            if len(consensus) > 0:
+                display_cons = consensus.head(20).copy()
+
+                # Format columns
+                display_cons['prob_display'] = display_cons['yes_prob'].apply(
+                    lambda x: f"{'🟢' if x >= 50 else '🔴'} {x:.0f}%"
+                )
+                display_cons['vol_display'] = display_cons['volume_24h'].apply(
+                    lambda x: f"${x:,.0f}"
+                )
+                display_cons['question_short'] = display_cons['question'].str[:75]
+
+                st.dataframe(
+                    display_cons[['prob_display', 'question_short', 'vol_display']].rename(
+                        columns={
+                            'prob_display': 'Prob',
+                            'question_short': 'Market',
+                            'vol_display': '24h Volume',
+                        }
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(len(display_cons) * 38 + 40, 700),
+                )
+            else:
+                st.info("No consensus data for this theme.")
 
         st.divider()
 
