@@ -483,101 +483,300 @@ def render_trading():
 # ============================================================
 
 def render_polymarket():
-    st.header("Polymarket Monitor")
+    st.header("Polymarket — Where Is The Money Going?")
 
-    # ---- Event summary ----
-    st.subheader("Tracked Events")
+    # ── Theme selector (or All) ──
+    theme_options = ["All Themes"] + list(THEME_TAG_SLUGS.keys())
+    selected_theme = st.radio(
+        "Theme", theme_options, horizontal=True, label_visibility="collapsed"
+    )
+
     try:
-        events = get_event_summary()
-        if len(events) > 0:
-            st.dataframe(
-                events.rename(columns={
-                    'event_slug': 'Event',
-                    'market_count': 'Markets',
-                    'avg_prob': 'Avg Prob',
-                    'total_24h_vol': '24h Volume',
-                    'last_update': 'Last Update',
-                }),
-                use_container_width=True,
-                hide_index=True,
-            )
+        # ============================================================
+        # ROW 1: THEME METRICS
+        # ============================================================
+        all_markets = get_theme_summary()
+
+        if len(all_markets) == 0:
+            st.warning("No Polymarket data available yet.")
+            return
+
+        # Assign theme to each market based on event_slug keywords
+        def assign_theme(slug):
+            slug_lower = str(slug).lower()
+            # Simple keyword matching — not perfect but good enough
+            fed_kw = ['fed', 'fomc', 'rate-cut', 'interest-rate', 'inflation',
+                       'cpi', 'pce', 'gdp', 'recession', 'employment',
+                       'monetary', 'federal-reserve', 'powell', 'jobs-report',
+                       'nonfarm', 'payroll', 'consumer-price', 'core-pce']
+            trade_kw = ['tariff', 'trade-war', 'trade-deal', 'trade-deficit',
+                        'china-tariff', 'blanket-tariff', 'congress-pass']
+            geo_kw = ['iran', 'nuclear', 'khamenei', 'israel', 'strike',
+                      'war', 'invasion', 'sanctions', 'oil', 'crude',
+                      'strait-of-hormuz', 'military', 'geopolit', 'yemen',
+                      'hezbollah', 'houthi', 'regime', 'ceasefire']
+
+            for kw in fed_kw:
+                if kw in slug_lower:
+                    return "Fed & Monetary Policy"
+            for kw in trade_kw:
+                if kw in slug_lower:
+                    return "Trade & Tariffs"
+            for kw in geo_kw:
+                if kw in slug_lower:
+                    return "Geopolitics"
+            return "Other"
+
+        all_markets['theme'] = all_markets['event_slug'].apply(assign_theme)
+
+        # Filter by selected theme
+        if selected_theme != "All Themes":
+            filtered = all_markets[all_markets['theme'] == selected_theme]
         else:
-            st.info("No events being tracked.")
+            filtered = all_markets
+
+        # Theme summary cards
+        theme_stats = all_markets.groupby('theme').agg(
+            markets=('condition_id', 'nunique'),
+            vol_24h=('volume_24h', 'sum'),
+            total_vol=('total_volume', 'sum'),
+            liquidity=('liquidity', 'sum'),
+        ).reset_index().sort_values('vol_24h', ascending=False)
+
+        cols = st.columns(len(theme_stats))
+        for i, (_, row) in enumerate(theme_stats.iterrows()):
+            with cols[i]:
+                is_active = selected_theme == "All Themes" or selected_theme == row['theme']
+                label = row['theme']
+                if row['theme'] == "Fed & Monetary Policy":
+                    label = "🏦 Fed"
+                elif row['theme'] == "Geopolitics":
+                    label = "🌍 Geopolitics"
+                elif row['theme'] == "Trade & Tariffs":
+                    label = "📦 Trade"
+                else:
+                    label = "📋 Other"
+
+                st.metric(
+                    label=label,
+                    value=f"${row['vol_24h']:,.0f}",
+                    delta=f"{int(row['markets'])} markets",
+                )
+
+        st.divider()
+
+        # ============================================================
+        # ROW 2: MONEY FLOW — Top events by volume
+        # ============================================================
+        st.subheader("💰 Money Flow — Top Events (24h Volume)")
+
+        vol_events = get_volume_by_event(top_n=20)
+        if len(vol_events) > 0:
+            # Filter by theme if selected
+            if selected_theme != "All Themes":
+                vol_events['theme'] = vol_events['event_slug'].apply(assign_theme)
+                vol_events = vol_events[vol_events['theme'] == selected_theme]
+
+            if len(vol_events) > 0:
+                # Bar chart
+                vol_chart = alt.Chart(vol_events.head(12)).mark_bar(
+                    cornerRadiusTopRight=4,
+                    cornerRadiusBottomRight=4,
+                ).encode(
+                    x=alt.X('total_24h_vol:Q', title='24h Volume ($)',
+                             axis=alt.Axis(format='~s')),
+                    y=alt.Y('event_slug:N', title=None,
+                             sort='-x'),
+                    color=alt.value('#4ecdc4'),
+                    tooltip=[
+                        alt.Tooltip('event_slug:N', title='Event'),
+                        alt.Tooltip('total_24h_vol:Q', title='24h Vol', format='$,.0f'),
+                        alt.Tooltip('market_count:Q', title='Markets'),
+                        alt.Tooltip('avg_prob:Q', title='Avg Prob', format='.1f'),
+                        alt.Tooltip('total_liquidity:Q', title='Liquidity', format='$,.0f'),
+                    ],
+                ).properties(height=350)
+                st.altair_chart(vol_chart, use_container_width=True)
+            else:
+                st.info("No volume data for this theme.")
+
+        st.divider()
+
+        # ============================================================
+        # ROW 3: BIGGEST MOVERS
+        # ============================================================
+        st.subheader("⚡ Biggest Movers")
+
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            mover_hours = st.selectbox(
+                "Window", [1, 6, 12, 24, 48],
+                index=3, key="pm_mover_hours"
+            )
+        with col2:
+            min_move = st.selectbox(
+                "Min move %", [1.0, 2.0, 3.0, 5.0],
+                index=2, key="pm_min_move"
+            )
+
+        movers = get_top_movers(hours=mover_hours, min_move_pct=min_move)
+
+        if len(movers) > 0:
+            # Filter by theme
+            if selected_theme != "All Themes":
+                movers['theme'] = movers['event_slug'].apply(assign_theme)
+                movers = movers[movers['theme'] == selected_theme]
+
+            if len(movers) > 0:
+                # Format for display
+                display_movers = movers.head(15).copy()
+                display_movers['direction'] = display_movers['move_pct'].apply(
+                    lambda x: '🟢' if x > 0 else '🔴'
+                )
+                display_movers['move_display'] = display_movers['move_pct'].apply(
+                    lambda x: f"{x:+.1f}%"
+                )
+                display_movers['prob_display'] = display_movers.apply(
+                    lambda r: f"{r['old_prob']:.0f}% → {r['current_prob']:.0f}%",
+                    axis=1
+                )
+                display_movers['vol_display'] = display_movers['volume_24h'].apply(
+                    lambda x: f"${x:,.0f}" if pd.notna(x) else "-"
+                )
+                display_movers['question_short'] = display_movers['question'].str[:70]
+
+                st.dataframe(
+                    display_movers[['direction', 'question_short', 'move_display',
+                                    'prob_display', 'vol_display']].rename(columns={
+                        'direction': '',
+                        'question_short': 'Market',
+                        'move_display': 'Move',
+                        'prob_display': 'Probability',
+                        'vol_display': '24h Vol',
+                    }),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(len(display_movers) * 38 + 40, 600),
+                )
+
+                # Probability timeline for top movers
+                top_ids = movers.head(5)['condition_id'].tolist()
+                if top_ids:
+                    st.caption(f"Probability timeline — top {len(top_ids)} movers ({mover_hours}h)")
+                    timeline = get_prob_timeline(top_ids, hours=mover_hours)
+                    if len(timeline) > 0:
+                        # Shorten question for legend
+                        timeline['label'] = timeline['question'].str[:45]
+                        prob_chart = alt.Chart(timeline).mark_line(
+                            strokeWidth=2
+                        ).encode(
+                            x=alt.X('snapshot_time:T', title=None),
+                            y=alt.Y('yes_prob:Q', title='Probability (%)',
+                                     scale=alt.Scale(zero=False)),
+                            color=alt.Color('label:N', title='Market',
+                                            legend=alt.Legend(orient='bottom')),
+                            tooltip=[
+                                alt.Tooltip('label:N', title='Market'),
+                                alt.Tooltip('yes_prob:Q', title='Prob', format='.1f'),
+                                alt.Tooltip('snapshot_time:T', title='Time'),
+                            ],
+                        ).properties(height=300)
+                        st.altair_chart(prob_chart, use_container_width=True)
+            else:
+                st.info(f"No moves >{min_move}% in this theme.")
+        else:
+            st.info(f"No moves >{min_move}% in the last {mover_hours}h.")
+
+        st.divider()
+
+        # ============================================================
+        # ROW 4: EVENT DRILLDOWN
+        # ============================================================
+        st.subheader("🔍 Event Drilldown")
+
+        events_df = get_event_summary()
+        if len(events_df) > 0:
+            # Filter by theme
+            if selected_theme != "All Themes":
+                events_df['theme'] = events_df['event_slug'].apply(assign_theme)
+                events_df = events_df[events_df['theme'] == selected_theme]
+
+            if len(events_df) > 0:
+                # Build display label: slug + volume hint
+                events_df['label'] = events_df.apply(
+                    lambda r: f"{r['event_slug']}  (${r['total_24h_vol']:,.0f} vol)",
+                    axis=1
+                )
+                event_labels = events_df['label'].tolist()
+                event_slugs = events_df['event_slug'].tolist()
+
+                selected_label = st.selectbox(
+                    "Select event", event_labels, key="pm_event_select"
+                )
+                idx = event_labels.index(selected_label)
+                selected_slug = event_slugs[idx]
+
+                markets = get_markets_by_event(selected_slug)
+                if len(markets) > 0:
+                    markets_display = markets.copy()
+                    markets_display['prob_bar'] = markets_display['yes_prob'].apply(
+                        lambda x: f"{x:.0f}%"
+                    )
+                    st.dataframe(
+                        markets_display[['question', 'yes_prob', 'volume_24h',
+                                         'total_volume', 'change_1d']].rename(columns={
+                            'question': 'Market',
+                            'yes_prob': 'Prob %',
+                            'volume_24h': '24h Vol',
+                            'total_volume': 'Total Vol',
+                            'change_1d': '1d Δ',
+                        }),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    # Chart individual market
+                    market_options = markets['question'].tolist()
+                    market_cids = markets['condition_id'].tolist()
+                    selected_market = st.selectbox(
+                        "Chart market", market_options, key="pm_market_chart"
+                    )
+                    midx = market_options.index(selected_market)
+                    selected_cid = market_cids[midx]
+
+                    chart_hours = st.select_slider(
+                        "Lookback", options=[6, 12, 24, 48],
+                        value=24, key="pm_chart_hours"
+                    )
+                    history = get_pm_market_history(selected_cid, hours=chart_hours)
+                    if len(history) > 0:
+                        price_chart = alt.Chart(history).mark_area(
+                            line={'color': '#4ecdc4', 'strokeWidth': 2},
+                            color=alt.Gradient(
+                                gradient='linear',
+                                stops=[
+                                    alt.GradientStop(color='rgba(78, 205, 196, 0.3)', offset=0),
+                                    alt.GradientStop(color='rgba(78, 205, 196, 0.02)', offset=1),
+                                ],
+                                x1=1, x2=1, y1=1, y2=0,
+                            ),
+                        ).encode(
+                            x=alt.X('snapshot_time:T', title=None),
+                            y=alt.Y('yes_prob:Q', title='Probability (%)',
+                                     scale=alt.Scale(zero=False)),
+                            tooltip=[
+                                alt.Tooltip('yes_prob:Q', title='Prob', format='.1f'),
+                                alt.Tooltip('snapshot_time:T', title='Time'),
+                            ],
+                        ).properties(height=250)
+                        st.altair_chart(price_chart, use_container_width=True)
+                    else:
+                        st.info("No history data for this market.")
+
     except Exception as e:
-        st.warning(f"Polymarket data unavailable: {e}")
-        return
-
-    st.divider()
-
-    # ---- Top movers ----
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        mover_hours = st.selectbox("Movers window", [6, 12, 24, 48], index=2)
-        min_move = st.slider("Min move %", 1.0, 10.0, 3.0, 0.5)
-
-    st.subheader(f"Top Movers — Last {mover_hours}h (>{min_move}%)")
-    movers = get_top_movers(hours=mover_hours, min_move_pct=min_move)
-    if len(movers) > 0:
-        st.dataframe(
-            movers[['question', 'event_slug', 'old_prob', 'current_prob', 'move_pct']].rename(columns={
-                'question': 'Market',
-                'event_slug': 'Event',
-                'old_prob': 'Was',
-                'current_prob': 'Now',
-                'move_pct': 'Move %',
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("No significant movers.")
-
-    st.divider()
-
-    # ---- Recent alerts ----
-    st.subheader("Recent Alerts")
-    alerts = get_recent_alerts(hours=24)
-    if len(alerts) > 0:
-        st.dataframe(
-            alerts[['alert_time', 'alert_type', 'question', 'prob_now', 'prob_before']].rename(columns={
-                'alert_time': 'Time',
-                'alert_type': 'Type',
-                'question': 'Market',
-                'prob_now': 'Now',
-                'prob_before': 'Before',
-            }),
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("No alerts in the last 24h.")
-
-    st.divider()
-
-    # ---- Event detail ----
-    st.subheader("Event Detail")
-    try:
-        if len(events) > 0:
-            slugs = events['event_slug'].tolist()
-            if slugs:
-                selected_event = st.selectbox("Select event", slugs)
-                if selected_event:
-                    markets = get_markets_by_event(selected_event)
-                    if len(markets) > 0:
-                        st.dataframe(
-                            markets[['question', 'yes_prob', 'best_bid', 'volume_24h', 'change_1d']].rename(columns={
-                                'question': 'Market',
-                                'yes_prob': 'Prob',
-                                'best_bid': 'Bid',
-                                'volume_24h': '24h Vol',
-                                'change_1d': '1d Change',
-                            }),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-    except Exception as e:
-        st.warning(f"Could not load event detail: {e}")
-
+        st.error(f"Polymarket error: {e}")
+        import traceback
+        st.code(traceback.format_exc())
 
 # ============================================================
 # ROUTING
