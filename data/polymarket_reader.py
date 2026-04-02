@@ -359,3 +359,140 @@ def get_consensus(top_n: int = 200, min_volume: float = 1000) -> "pd.DataFrame":
         return df
     finally:
         conn.close()
+
+# ============================================================
+# OIL THESIS — Ceasefire velocity & key signals
+# ============================================================
+
+OIL_THESIS_SLUGS = {
+    'ceasefire': 'us-x-iran-ceasefire-by',
+    'ceasefire_vs_120': 'us-x-iran-ceasefire-before-oil-hits-120',
+    'conflict_ends': 'iran-x-israelus-conflict-ends-by',
+    'hormuz': 'strait-of-hormuz-traffic-returns-to-normal-by-april-30',
+    'military_ops': 'trump-announces-end-of-military-operations-against-iran-by',
+}
+
+
+def get_ceasefire_velocity(hours_back: int = 24) -> pd.DataFrame:
+    """
+    Compare current ceasefire probabilities to N hours ago.
+    Returns velocity (change in probability points) for each contract.
+    """
+    conn = _connect()
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
+
+        df = pd.read_sql_query(
+            """
+            WITH latest AS (
+                SELECT question, condition_id, event_slug, yes_prob,
+                       volume_24h, total_volume, snapshot_time,
+                       ROW_NUMBER() OVER (PARTITION BY condition_id ORDER BY snapshot_time DESC) as rn
+                FROM snapshots
+                WHERE event_slug = 'us-x-iran-ceasefire-by'
+            ),
+            baseline AS (
+                SELECT condition_id, yes_prob as old_prob, snapshot_time as old_time,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY condition_id
+                           ORDER BY ABS(julianday(snapshot_time) - julianday(?))
+                       ) as rn
+                FROM snapshots
+                WHERE event_slug = 'us-x-iran-ceasefire-by'
+            )
+            SELECT l.question, l.condition_id,
+                   ROUND(b.old_prob, 1) as prob_then,
+                   ROUND(l.yes_prob, 1) as prob_now,
+                   ROUND(l.yes_prob - b.old_prob, 1) as velocity,
+                   ROUND(l.volume_24h, 0) as vol_24h,
+                   ROUND(l.total_volume, 0) as total_vol,
+                   l.snapshot_time as latest_time,
+                   b.old_time as baseline_time
+            FROM latest l
+            JOIN baseline b ON l.condition_id = b.condition_id
+            WHERE l.rn = 1 AND b.rn = 1
+            ORDER BY l.question
+            """, conn, params=[cutoff]
+        )
+        return df
+    finally:
+        conn.close()
+
+
+def get_contract_daily_history(event_slug: str, condition_id: Optional[str] = None) -> pd.DataFrame:
+    """
+    Daily aggregated history for contracts under an event slug.
+    Returns day, question, avg/high/low probability.
+    """
+    conn = _connect()
+    try:
+        if condition_id:
+            df = pd.read_sql_query(
+                """
+                SELECT date(snapshot_time) as day, question,
+                       ROUND(AVG(yes_prob), 1) as avg_prob,
+                       ROUND(MAX(yes_prob), 1) as high,
+                       ROUND(MIN(yes_prob), 1) as low,
+                       ROUND(MAX(volume_24h), 0) as max_vol_24h
+                FROM snapshots
+                WHERE condition_id = ?
+                GROUP BY date(snapshot_time)
+                ORDER BY day
+                """, conn, params=[condition_id]
+            )
+        else:
+            df = pd.read_sql_query(
+                """
+                SELECT date(snapshot_time) as day, question, condition_id,
+                       ROUND(AVG(yes_prob), 1) as avg_prob,
+                       ROUND(MAX(yes_prob), 1) as high,
+                       ROUND(MIN(yes_prob), 1) as low,
+                       ROUND(MAX(volume_24h), 0) as max_vol_24h
+                FROM snapshots
+                WHERE event_slug = ?
+                GROUP BY date(snapshot_time), condition_id
+                ORDER BY day
+                """, conn, params=[event_slug]
+            )
+        if len(df) > 0:
+            df['day'] = pd.to_datetime(df['day'])
+        return df
+    finally:
+        conn.close()
+
+
+def get_oil_thesis_signals() -> pd.DataFrame:
+    """
+    Get latest snapshot for all oil-thesis-relevant contracts:
+    ceasefire, oil price, Hormuz, military ops, conflict end.
+    """
+    conn = _connect()
+    try:
+        slug_list = list(OIL_THESIS_SLUGS.values())
+        # Also grab oil price and WTI contracts
+        extra_keywords = ['crude-oil', 'cl-hit', 'wti']
+
+        # Build WHERE clause
+        slug_placeholders = ','.join(['?'] * len(slug_list))
+        like_clauses = ' OR '.join(['event_slug LIKE ?' for _ in extra_keywords])
+        like_params = [f'%{kw}%' for kw in extra_keywords]
+
+        df = pd.read_sql_query(
+            f"""
+            SELECT s.event_slug, s.question, s.condition_id,
+                   s.yes_prob, s.volume_24h, s.total_volume,
+                   s.liquidity, s.change_1d, s.change_1w, s.snapshot_time
+            FROM snapshots s
+            INNER JOIN (
+                SELECT condition_id, MAX(snapshot_time) as max_time
+                FROM snapshots
+                WHERE event_slug IN ({slug_placeholders}) OR {like_clauses}
+                GROUP BY condition_id
+            ) latest ON s.condition_id = latest.condition_id
+                    AND s.snapshot_time = latest.max_time
+            ORDER BY s.volume_24h DESC
+            """, conn, params=[*slug_list, *like_params]
+        )
+        return df
+    finally:
+        conn.close()

@@ -39,9 +39,10 @@ from data.polymarket_reader import (
     get_event_summary, get_market_history as get_pm_market_history,
     get_markets_by_event, get_money_flow, get_theme_summary,
     get_volume_by_event, get_prob_timeline, get_consensus,
+    get_ceasefire_velocity, get_contract_daily_history,
+    get_oil_thesis_signals, OIL_THESIS_SLUGS,
     THEME_TAG_SLUGS,
 )
-
 
 # ============================================================
 # PAGE CONFIG
@@ -64,7 +65,7 @@ with st.sidebar:
 
     page = st.radio(
         "Navigate",
-        ["Overview", "Trading", "Polymarket"],
+        ["Overview", "Trading", "Polymarket", "Oil Thesis"],
         index=0,
     )
 
@@ -829,6 +830,208 @@ def render_polymarket():
         st.code(traceback.format_exc())
 
 # ============================================================
+# PAGE: OIL THESIS
+# ============================================================
+
+def render_oil_thesis():
+    st.header("🛢️ Oil Thesis — War Room")
+    st.caption("Entry: BRENTOIL long @ $108.66 | Thesis: April peak → May ceasefire → oil crash")
+
+    try:
+        # ============================================================
+        # ROW 1: VELOCITY DASHBOARD
+        # ============================================================
+        st.subheader("🚨 Ceasefire Velocity — Exit Signal Monitor")
+
+        col_window, _ = st.columns([1, 3])
+        with col_window:
+            vel_hours = st.selectbox("Compare to", [6, 12, 24, 48], index=2, key="vel_hours")
+
+        velocity = get_ceasefire_velocity(hours_back=vel_hours)
+
+        if len(velocity) > 0:
+            # Filter out resolved contracts (March dates)
+            active = velocity[~velocity['question'].str.contains('March')].copy()
+
+            if len(active) > 0:
+                # Sort by deadline order
+                deadline_order = ['April 7', 'April 15', 'April 30', 'May 31', 'June 30', 'December 31']
+                active['sort_key'] = active['question'].apply(
+                    lambda q: next((i for i, d in enumerate(deadline_order) if d in q), 99)
+                )
+                active = active.sort_values('sort_key')
+
+                # Display as metrics row
+                cols = st.columns(len(active))
+                for i, (_, row) in enumerate(active.iterrows()):
+                    with cols[i]:
+                        # Extract short label
+                        label = row['question'].replace('US x Iran ceasefire by ', '')
+                        prob = row['prob_now']
+                        vel = row['velocity']
+
+                        # Color logic: positive velocity = danger for oil long
+                        if vel > 5:
+                            st.error(f"⚠️ **{label}**")
+                        elif vel > 0:
+                            st.warning(f"📡 **{label}**")
+                        else:
+                            st.success(f"✅ **{label}**")
+
+                        st.metric(
+                            label="Probability",
+                            value=f"{prob:.0f}%",
+                            delta=f"{vel:+.1f}pp ({vel_hours}h)",
+                            delta_color="inverse",  # Green when negative (good for oil long)
+                        )
+                        st.caption(f"Vol: ${row['vol_24h']:,.0f}")
+
+                # Alert banner
+                max_vel = active['velocity'].max()
+                if max_vel > 10:
+                    st.error("🚨 ALERT: Ceasefire probability spiking — check for insider movement!")
+                elif max_vel > 5:
+                    st.warning("⚠️ Ceasefire momentum turning positive — watch closely")
+                elif active['velocity'].max() < -5:
+                    st.success("🟢 Ceasefire velocity strongly negative — oil thesis intact")
+                else:
+                    st.info("📊 Ceasefire velocity neutral — no exit signal")
+
+        st.divider()
+
+        # ============================================================
+        # ROW 2: THE $120 RACE
+        # ============================================================
+        st.subheader("🏁 The $120 Race — Ceasefire vs Oil Spike")
+
+        race_slug = 'us-x-iran-ceasefire-before-oil-hits-120'
+        race_markets = get_markets_by_event(race_slug)
+
+        if len(race_markets) > 0:
+            race = race_markets.iloc[0]
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(
+                    "Ceasefire before $120?",
+                    f"{race['yes_prob']:.0f}%",
+                    f"{race.get('change_1d', 0):+.1f}pp (1d)" if race.get('change_1d') else None,
+                    delta_color="inverse",
+                )
+            with col2:
+                oil_wins = 100 - race['yes_prob']
+                st.metric("Oil hits $120 first", f"{oil_wins:.0f}%")
+            with col3:
+                st.metric("24h Volume", f"${race.get('volume_24h', 0):,.0f}")
+
+            # Daily history chart
+            race_history = get_contract_daily_history(race_slug)
+            if len(race_history) > 0:
+                race_chart = alt.Chart(race_history).mark_area(
+                    line={'color': '#EF5350', 'strokeWidth': 2},
+                    color=alt.Gradient(
+                        gradient='linear',
+                        stops=[
+                            alt.GradientStop(color='rgba(239, 83, 80, 0.3)', offset=0),
+                            alt.GradientStop(color='rgba(239, 83, 80, 0.02)', offset=1),
+                        ],
+                        x1=1, x2=1, y1=1, y2=0,
+                    ),
+                ).encode(
+                    x=alt.X('day:T', title=None),
+                    y=alt.Y('avg_prob:Q', title='Ceasefire before $120 (%)',
+                             scale=alt.Scale(domain=[0, 100])),
+                    tooltip=[
+                        alt.Tooltip('day:T', title='Date'),
+                        alt.Tooltip('avg_prob:Q', title='Avg Prob', format='.1f'),
+                        alt.Tooltip('high:Q', title='High', format='.1f'),
+                        alt.Tooltip('low:Q', title='Low', format='.1f'),
+                    ],
+                ).properties(height=250)
+                st.altair_chart(race_chart, use_container_width=True)
+
+        st.divider()
+
+        # ============================================================
+        # ROW 3: CEASEFIRE TIMELINE CHART
+        # ============================================================
+        st.subheader("📈 Ceasefire Probability Timeline")
+
+        ceasefire_markets = get_markets_by_event('us-x-iran-ceasefire-by')
+        if len(ceasefire_markets) > 0:
+            # Filter active contracts
+            active_cf = ceasefire_markets[~ceasefire_markets['question'].str.contains('March')]
+            cids = active_cf['condition_id'].tolist()
+
+            chart_hours = st.select_slider(
+                "Lookback", options=[12, 24, 48, 72, 168],
+                value=72, key="oil_cf_hours"
+            )
+
+            timeline = get_prob_timeline(cids, hours=chart_hours)
+            if len(timeline) > 0:
+                timeline['label'] = timeline['question'].str.replace('US x Iran ceasefire by ', '')
+
+                cf_chart = alt.Chart(timeline).mark_line(strokeWidth=2).encode(
+                    x=alt.X('snapshot_time:T', title=None),
+                    y=alt.Y('yes_prob:Q', title='Probability (%)',
+                             scale=alt.Scale(domain=[0, 100])),
+                    color=alt.Color('label:N', title='Deadline',
+                                    legend=alt.Legend(orient='bottom')),
+                    tooltip=[
+                        alt.Tooltip('label:N', title='Deadline'),
+                        alt.Tooltip('yes_prob:Q', title='Prob', format='.1f'),
+                        alt.Tooltip('snapshot_time:T', title='Time', format='%b %d %H:%M'),
+                    ],
+                ).properties(height=350)
+                st.altair_chart(cf_chart, use_container_width=True)
+
+        st.divider()
+
+        # ============================================================
+        # ROW 4: ALL THESIS SIGNALS
+        # ============================================================
+        st.subheader("📡 All Thesis Signals")
+
+        signals = get_oil_thesis_signals()
+        if len(signals) > 0:
+            # Categorize
+            def categorize(slug):
+                if 'ceasefire' in slug:
+                    return '🕊️ Ceasefire'
+                elif 'crude' in slug or 'cl-hit' in slug or 'wti' in slug or 'oil' in slug:
+                    return '🛢️ Oil Price'
+                elif 'hormuz' in slug:
+                    return '🚢 Hormuz'
+                elif 'military' in slug or 'force' in slug:
+                    return '⚔️ Military'
+                elif 'conflict' in slug or 'regime' in slug:
+                    return '🌍 Conflict'
+                return '📋 Other'
+
+            signals['category'] = signals['event_slug'].apply(categorize)
+
+            for cat in ['🕊️ Ceasefire', '🛢️ Oil Price', '🚢 Hormuz', '⚔️ Military', '🌍 Conflict', '📋 Other']:
+                cat_df = signals[signals['category'] == cat]
+                if len(cat_df) > 0:
+                    st.caption(cat)
+                    for _, row in cat_df.iterrows():
+                        prob = row['yes_prob']
+                        icon = '🟢' if prob >= 50 else '🔴'
+                        vol = row['volume_24h']
+                        change = row.get('change_1d', 0) or 0
+                        delta_icon = '↑' if change > 0 else '↓' if change < 0 else '→'
+
+                        st.text(
+                            f"{icon} {prob:5.1f}% {delta_icon}{abs(change):+.1f}pp  "
+                            f"${vol:>10,.0f}  {row['question'][:70]}"
+                        )
+
+    except Exception as e:
+        st.error(f"Oil Thesis error: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+
+# ============================================================
 # ROUTING
 # ============================================================
 
@@ -838,6 +1041,8 @@ elif page == "Trading":
     render_trading()
 elif page == "Polymarket":
     render_polymarket()
+elif page == "Oil Thesis":
+    render_oil_thesis()
 
 # ============================================================
 # AUTO-REFRESH
